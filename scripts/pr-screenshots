@@ -157,8 +157,11 @@ def main(argv):
 
     pr = args.pr
     if not pr:
-        r = run(["gh", "pr", "view", "--repo", repo, "--json", "number", "--jq", ".number"], check=False)
-        pr = r.stdout.strip()
+        # `gh pr view --repo` needs an explicit selector, so name the current branch.
+        branch = run(["git", "branch", "--show-current"], check=False).stdout.strip()
+        if branch:
+            r = run(["gh", "pr", "view", branch, "--repo", repo, "--json", "number", "--jq", ".number"], check=False)
+            pr = r.stdout.strip()
     if not pr:
         if not args.print_only:
             die("No PR for the current branch. Push and open the PR first, or pass --pr N.")
