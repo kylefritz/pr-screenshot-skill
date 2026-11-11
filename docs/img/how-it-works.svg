@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="400" viewBox="0 0 920 400" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <rect width="920" height="400" rx="12" fill="#ffffff"/>
+  <rect x="0.5" y="0.5" width="919" height="399" rx="12" fill="none" stroke="#d0d7de"/>
+
+  <text x="28" y="40" font-size="15" font-weight="600" fill="#57606a" letter-spacing="0.6">YOUR REPO ON GITHUB</text>
+
+  <!-- main -->
+  <text x="28" y="94" font-size="14" fill="#1f2328" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">refs/heads/main</text>
+  <line x1="250" y1="89" x2="520" y2="89" stroke="#8c959f" stroke-width="2"/>
+  <circle cx="270" cy="89" r="8" fill="#1f2328"/>
+  <circle cx="340" cy="89" r="8" fill="#1f2328"/>
+  <circle cx="410" cy="89" r="8" fill="#1f2328"/>
+  <circle cx="480" cy="89" r="8" fill="#1f2328"/>
+
+  <!-- feature branch -->
+  <text x="28" y="150" font-size="14" fill="#1f2328" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">refs/heads/feature</text>
+  <path d="M410 89 C 430 89, 430 145, 460 145" fill="none" stroke="#8c959f" stroke-width="2"/>
+  <line x1="460" y1="145" x2="560" y2="145" stroke="#8c959f" stroke-width="2"/>
+  <circle cx="480" cy="145" r="8" fill="#0969da"/>
+  <circle cx="550" cy="145" r="8" fill="#0969da"/>
+  <text x="580" y="150" font-size="14" fill="#0969da">PR #12: the code, the diff</text>
+
+  <!-- divider -->
+  <line x1="28" y1="190" x2="892" y2="190" stroke="#d0d7de" stroke-dasharray="5 5"/>
+  <text x="28" y="214" font-size="13" fill="#57606a">outside refs/heads and refs/tags: not in the branch list, the PR diff, Actions or a clone</text>
+
+  <!-- hidden ref -->
+  <text x="28" y="268" font-size="14" fill="#1f2328" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">refs/pr-screenshots/12</text>
+  <line x1="250" y1="263" x2="340" y2="263" stroke="#bf8700" stroke-width="2"/>
+  <rect x="262" y="255" width="16" height="16" transform="rotate(45 270 263)" fill="#bf8700"/>
+  <rect x="332" y="255" width="16" height="16" transform="rotate(45 340 263)" fill="#bf8700"/>
+  <text x="250" y="300" font-size="12" fill="#57606a">1st run</text>
+  <text x="318" y="300" font-size="12" fill="#57606a">2nd run</text>
+  <text x="250" y="318" font-size="12" fill="#57606a">(commits holding</text>
+  <text x="250" y="334" font-size="12" fill="#57606a">only the images)</text>
+
+  <!-- PR description -->
+  <rect x="440" y="236" width="452" height="128" rx="8" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="458" y="262" font-size="14" font-weight="600" fill="#1f2328">PR #12 description</text>
+  <text x="458" y="290" font-size="13" fill="#1f2328">## Screenshots</text>
+  <text x="458" y="316" font-size="12" fill="#57606a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">![after](github.com/o/r/raw/&lt;sha&gt;/after.png)</text>
+  <text x="458" y="346" font-size="12" fill="#57606a">SHA-pinned: old links survive re-runs; private repos work</text>
+  <path d="M352 263 C 390 263, 400 300, 436 300" fill="none" stroke="#bf8700" stroke-width="2" marker-end="url(#arrow)"/>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#bf8700"/>
+    </marker>
+  </defs>
+</svg>
