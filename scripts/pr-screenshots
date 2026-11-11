@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Put screenshots in a GitHub PR description without committing them to any branch.
+
+Hidden-ref image hosting: each image is written into the repo's own object store with git
+plumbing (hash-object, mktree, commit-tree) and pushed to a ref outside refs/heads and refs/tags,
+`refs/pr-screenshots/<pr>`. That ref never shows in the branch list, in any PR diff, in Actions
+(push events fire only for branches and tags) or in a normal clone. The images are linked by
+commit SHA as
+
+    https://github.com/<owner>/<repo>/raw/<sha>/<file>
+
+which redirects a viewer who can see the repo to a short-lived tokened URL, so it works in a
+private repo. (raw.githubusercontent.com links 404 there without a token.)
+
+Some environments refuse pushes outside refs/heads (some cloud sandboxes and proxies). Then the
+commit goes to a `screenshots/pr-<pr>` branch instead: one extra line in the branch list.
+
+Re-runs build on the previous upload for the same PR (the old commit is the new one's parent), so
+links already posted keep resolving.
+
+Usage:
+  pr-screenshots [options] <image> [image ...]
+
+  pr-screenshots before.png after.png                  # PR for the current branch; append to ## Screenshots
+  pr-screenshots --caption "Menu, phone" menu.png      # caption for the next file (repeatable)
+  pr-screenshots --replace shots/*.png                 # replace the section instead of appending
+  pr-screenshots --pr 12 --print chart.png             # upload and print markdown; leave the body alone
+  pr-screenshots --dry-run shots/*.png
+
+Markdown goes to stdout, progress to stderr, so md="$(pr-screenshots --print a.png)" captures
+just the markdown. Run it from inside a clone of the repo.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+
+IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+LINK_TYPES = {".mp4", ".mov", ".webm", ".pdf"}
+MAX_BYTES = 50 * 1024 * 1024  # GitHub rejects pushed blobs over 100 MB and warns over 50 MB
+
+BEGIN = "<!-- pr-screenshots:begin -->"
+END = "<!-- pr-screenshots:end -->"
+MARKED = re.compile(r"\n*" + re.escape(BEGIN) + r".*?" + re.escape(END), re.S)
+# Bodies written by hand or before the markers existed: the heading up to the next H2, a trailer
+# (a `---` rule or a "🤖 Generated with" line) or the end. Stopping at a trailer keeps the
+# attribution line that many PR bodies end with.
+LEGACY = re.compile(r"\n*^## Screenshots[ \t]*$.*?(?=^## |^---[ \t]*$|^🤖|\Z)", re.M | re.S)
+TRAILER = re.compile(r"\n*^(?:---[ \t]*|🤖.*)$(?![\s\S]*^## )", re.M)
+
+
+def log(msg=""):
+    print(msg, file=sys.stderr)
+
+
+def die(msg):
+    log(msg)
+    sys.exit(1)
+
+
+def run(cmd, input=None, check=True):
+    r = subprocess.run(cmd, input=input, capture_output=True, text=True)
+    if check and r.returncode != 0:
+        tail = " ".join((r.stderr or r.stdout).strip().splitlines()[-3:])
+        die(f"{' '.join(cmd[:3])} failed: {tail}")
+    return r
+
+
+def merge_body(body, md, replace):
+    """Return the PR body with `md` appended to (or replacing) its marked Screenshots block."""
+    body = body.rstrip("\n")
+
+    def block(inner):
+        return f"{BEGIN}\n## Screenshots\n\n{inner.strip()}\n\n{END}"
+
+    m = MARKED.search(body)
+    if m:
+        if replace:
+            inner = md
+        else:
+            old = m.group(0).strip()[len(BEGIN):-len(END)]
+            inner = re.sub(r"^\s*## Screenshots\s*", "", old).strip() + "\n\n" + md
+        return (body[: m.start()].rstrip() + "\n\n" + block(inner) + "\n\n" + body[m.end():].lstrip()).strip()
+
+    # First run on this PR: drop a hand-written section, then insert ours before any trailer.
+    clean = LEGACY.sub("\n\n", body).rstrip()
+    t = TRAILER.search(clean)
+    if t:
+        return f"{clean[: t.start()].rstrip()}\n\n{block(md)}\n\n{clean[t.start():].strip()}".strip()
+    return f"{clean}\n\n{block(md)}".strip()
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(
+        prog="pr-screenshots",
+        description="Upload images into the repo under a hidden ref and embed them in a PR description.",
+    )
+    p.add_argument("--pr", help="PR number (default: the PR for the current branch)")
+    p.add_argument("--repo", help="owner/name (default: the repo gh resolves for this clone)")
+    p.add_argument("--remote", default="origin", help="git remote to push to (default: origin)")
+    p.add_argument("--replace", action="store_true", help="replace the Screenshots section instead of appending")
+    p.add_argument("--print", dest="print_only", action="store_true",
+                   help="upload and print markdown only; don't edit the PR body")
+    p.add_argument("--dry-run", action="store_true", help="show what would happen, change nothing")
+    # --caption pairs with the file that follows it, so parse files and captions by hand.
+    known, rest = p.parse_known_args(argv)
+    files, captions, pending = [], [], None
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--caption":
+            if i + 1 >= len(rest):
+                die("--caption needs a value")
+            pending = rest[i + 1]
+            i += 2
+            continue
+        if a.startswith("--caption="):
+            pending = a.split("=", 1)[1]
+        elif a.startswith("-") and a != "-":
+            die(f"Unknown option: {a}")
+        else:
+            files.append(a)
+            captions.append(pending)
+            pending = None
+        i += 1
+    if not files:
+        p.print_usage(sys.stderr)
+        sys.exit(1)
+    known.files, known.captions = files, captions
+    return known
+
+
+def main(argv):
+    args = parse_args(argv)
+
+    for f in args.files:
+        if not os.path.isfile(f):
+            die(f"No such file: {f}")
+        ext = os.path.splitext(f)[1].lower()
+        if ext not in IMAGE_TYPES | LINK_TYPES:
+            die(f"Unsupported file type: {f} (supported: {' '.join(sorted(IMAGE_TYPES | LINK_TYPES))})")
+        if os.path.getsize(f) > MAX_BYTES:
+            die(f"Too large: {f} ({os.path.getsize(f) / 1e6:.1f} MB; keep uploads under 50 MB)")
+
+    if run(["git", "rev-parse", "--git-dir"], check=False).returncode != 0:
+        die("Run this from inside a clone of the repo.")
+
+    repo = args.repo or run(["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).stdout.strip()
+    if not repo:
+        die("Couldn't resolve the repository; pass --repo owner/name.")
+
+    pr = args.pr
+    if not pr:
+        r = run(["gh", "pr", "view", "--repo", repo, "--json", "number", "--jq", ".number"], check=False)
+        pr = r.stdout.strip()
+    if not pr:
+        if not args.print_only:
+            die("No PR for the current branch. Push and open the PR first, or pass --pr N.")
+        pr = f"misc-{int(time.time())}"
+
+    ref = f"refs/pr-screenshots/{pr}"
+    fallback_ref = f"refs/heads/screenshots/pr-{pr}"
+
+    # Unique paths within a run; across runs, a re-used name replaces the old file in the new
+    # tree, but the old commit (and its links) stays reachable as the parent.
+    seen, entries = set(), []
+    for f, cap in zip(args.files, args.captions):
+        base, ext = os.path.splitext(os.path.basename(f))
+        path, n = base + ext, 2
+        while path in seen:
+            path, n = f"{base}-{n}{ext}", n + 1
+        seen.add(path)
+        caption = cap or re.sub(r"[-_]+", " ", base).strip()
+        entries.append({"file": f, "path": path, "caption": caption, "image": ext.lower() in IMAGE_TYPES})
+
+    if args.dry_run:
+        for e in entries:
+            log(f"[dry-run] {e['file']} -> {e['path']} ({e['caption']}) on {ref} (fallback {fallback_ref})")
+        if not args.print_only:
+            log(f"[dry-run] would {'replace' if args.replace else 'append to'} ## Screenshots on PR #{pr} in {repo}")
+        return
+
+    log(f"PR #{pr} -> {repo}")
+
+    # Build on whichever ref already holds this PR's screenshots.
+    parent = ""
+    for r_name in (ref, fallback_ref):
+        ls = run(["git", "ls-remote", args.remote, r_name], check=False)
+        if ls.returncode == 0 and ls.stdout.strip():
+            sha = ls.stdout.split()[0]
+            if run(["git", "fetch", "--quiet", args.remote, r_name], check=False).returncode == 0:
+                parent = sha
+                break
+
+    lines = {}
+    if parent:
+        for line in run(["git", "ls-tree", parent]).stdout.splitlines():
+            lines[line.split("\t", 1)[1]] = line
+    for e in entries:
+        blob = run(["git", "hash-object", "-w", e["file"]]).stdout.strip()
+        log(f"  {e['path']} -> blob {blob[:10]}")
+        lines[e["path"]] = f"100644 blob {blob}\t{e['path']}"
+
+    tree = run(["git", "mktree"], input="\n".join(lines.values()) + "\n").stdout.strip()
+    commit_cmd = ["git", "commit-tree", tree, "-m", f"Screenshots for #{pr}"]
+    if parent:
+        commit_cmd[3:3] = ["-p", parent]
+    commit = run(commit_cmd).stdout.strip()
+
+    pushed_to = ref
+    if run(["git", "push", "--quiet", args.remote, f"{commit}:{ref}"], check=False).returncode != 0:
+        log(f"  {ref} refused; falling back to {fallback_ref}")
+        fb = run(["git", "push", "--quiet", "--force", args.remote, f"{commit}:{fallback_ref}"], check=False)
+        if fb.returncode != 0:
+            die(f"Both pushes failed: {' '.join(fb.stderr.strip().splitlines()[-3:])}")
+        pushed_to = fallback_ref
+    log(f"  commit {commit[:10]} on {pushed_to}")
+
+    md = ""
+    for e in entries:
+        url = f"https://github.com/{repo}/raw/{commit}/{urllib.parse.quote(e['path'])}"
+        if e["image"]:
+            md += f"**{e['caption']}**\n\n![{e['caption']}]({url})\n\n"
+        else:
+            md += f"**{e['caption']}**\n\n[{e['caption']}]({url})\n\n"
+
+    print(md.rstrip() + "\n")
+    if args.print_only:
+        return
+
+    body = run(["gh", "pr", "view", pr, "--repo", repo, "--json", "body", "--jq", ".body"]).stdout
+    new_body = merge_body(body, md, args.replace)
+
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tmp:
+        tmp.write(new_body + "\n")
+    try:
+        run(["gh", "pr", "edit", pr, "--repo", repo, "--body-file", tmp.name])
+    finally:
+        os.unlink(tmp.name)
+    log(f"PR #{pr} updated with {len(entries)} file(s)")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
